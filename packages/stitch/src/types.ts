@@ -10,6 +10,7 @@ import {
   GraphQLInputObjectType,
   GraphQLEnumValueConfig,
   GraphQLEnumType,
+  GraphQLField,
 } from 'graphql';
 import { ITypeDefinitions, TypeMap } from '@graphql-tools/utils';
 import { MergedTypeResolver, Subschema, SubschemaConfig } from '@graphql-tools/delegate';
@@ -55,6 +56,7 @@ export interface MergedTypeInfo<TContext = Record<string, any>> {
   targetSubschemas: Map<Subschema<any, any, any, TContext>, Array<Subschema<any, any, any, TContext>>>;
   uniqueFields: Record<string, Subschema<any, any, any, TContext>>;
   nonUniqueFields: Record<string, Array<Subschema<any, any, any, TContext>>>;
+  subschemaFields: Record<string, boolean>;
   typeMaps: Map<GraphQLSchema | SubschemaConfig<any, any, any, TContext>, TypeMap>;
   selectionSets: Map<Subschema<any, any, any, TContext>, SelectionSetNode>;
   fieldSelectionSets: Map<Subschema<any, any, any, TContext>, Record<string, SelectionSetNode>>;
@@ -63,9 +65,8 @@ export interface MergedTypeInfo<TContext = Record<string, any>> {
 
 export interface StitchingInfo<TContext = Record<string, any>> {
   subschemaMap: Map<GraphQLSchema | SubschemaConfig<any, any, any, TContext>, Subschema<any, any, any, TContext>>;
-  selectionSetsByType: Record<string, SelectionSetNode>;
-  selectionSetsByField: Record<string, Record<string, SelectionSetNode>>;
-  dynamicSelectionSetsByField: Record<string, Record<string, Array<(node: FieldNode) => SelectionSetNode>>>;
+  fieldNodesByField: Record<string, Record<string, Array<FieldNode>>>;
+  dynamicFieldNodesByField: Record<string, Record<string, Array<(fieldNode: FieldNode) => Array<FieldNode>>>>;
   mergedTypes: Record<string, MergedTypeInfo<TContext>>;
 }
 
@@ -127,6 +128,6 @@ export type OnTypeConflict<TContext = Record<string, any>> = (
 declare module '@graphql-tools/utils' {
   interface IFieldResolverOptions<TSource = any, TContext = any, TArgs = any> {
     fragment?: string;
-    selectionSet?: string | ((node: FieldNode) => SelectionSetNode);
+    selectionSet?: string | ((schema: GraphQLSchema, field: GraphQLField<any, any>) => (originalFieldNode: FieldNode) => Array<FieldNode>);
   }
 }

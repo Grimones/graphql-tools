@@ -72,5 +72,5 @@ Creates a dynamic `selectionSet` that [forwards gateway arguments](/docs/stitch-
 forwardArgsToSelectionSet(
   selectionSet: string,
   mapping?: Record<string, string[]>
-) => (field: FieldNode) => SelectionSetNode
+) => (schema: GraphQLSchema, field: GraphQLField<any, any>) => (originalFieldNode: FieldNode) => Array<FieldNode>
 ```
