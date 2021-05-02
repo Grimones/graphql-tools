@@ -19,15 +19,31 @@ import AggregateError from '@ardatan/aggregate-error';
 
 import { getBatchingExecutor } from '@graphql-tools/batch-execute';
 
-import { mapAsyncIterator, ExecutionResult, Executor, ExecutionParams } from '@graphql-tools/utils';
+import {
+  AsyncExecutionResult,
+  ExecutionParams,
+  ExecutionResult,
+  Executor,
+  isAsyncIterable,
+  mapAsyncIterator,
+} from '@graphql-tools/utils';
 
-import { IDelegateToSchemaOptions, IDelegateRequestOptions, SubschemaConfig, StitchingInfo, Transform } from './types';
+import {
+  DelegationContext,
+  IDelegateToSchemaOptions,
+  IDelegateRequestOptions,
+  SubschemaConfig,
+  StitchingInfo,
+  Transform,
+} from './types';
 
 import { isSubschemaConfig } from './subschemaConfig';
 import { Subschema } from './Subschema';
 import { createRequestFromInfo, getDelegatingOperation } from './createRequest';
 import { Transformer } from './Transformer';
 import { memoize2 } from './memoize';
+import { Receiver } from './Receiver';
+import { externalValueFromResult } from './externalValues';
 
 export function delegateToSchema<TContext = Record<string, any>, TArgs = any>(
   options: IDelegateToSchemaOptions<TContext, TArgs>
@@ -91,7 +107,6 @@ export function delegateRequest<TContext = Record<string, any>, TArgs = any>({
   transforms = [],
   transformedSchema,
   skipValidation,
-  skipTypeMerging,
   binding,
 }: IDelegateRequestOptions<TContext, TArgs>) {
   let operationDefinition: OperationDefinitionNode;
@@ -119,8 +134,8 @@ export function delegateRequest<TContext = Record<string, any>, TArgs = any>({
     transforms
   );
 
-  const delegationContext = {
-    subschema: subschemaOrSubschemaConfig,
+  const delegationContext: DelegationContext = {
+    subschema: subschemaConfig ?? targetSchema,
     targetSchema,
     operation: targetOperation,
     fieldName: targetFieldName,
@@ -132,7 +147,7 @@ export function delegateRequest<TContext = Record<string, any>, TArgs = any>({
     onLocatedError,
     transforms: allTransforms,
     transformedSchema: transformedSchema ?? (subschemaConfig as Subschema)?.transformedSchema ?? targetSchema,
-    skipTypeMerging,
+    asyncSelectionSets: Object.create(null),
   };
 
   const transformer = new Transformer(delegationContext, binding);
@@ -151,17 +166,26 @@ export function delegateRequest<TContext = Record<string, any>, TArgs = any>({
       const batchingOptions = subschemaConfig?.batchingOptions;
       executor = getBatchingExecutor(
         context,
-        executor,
+        executor as <TReturn, TArgs, TContext>(
+          params: ExecutionParams<TArgs, TContext>
+        ) => ExecutionResult<TReturn> | Promise<ExecutionResult<TReturn>>,
+        targetSchema,
         batchingOptions?.dataLoaderOptions,
         batchingOptions?.extensionsReducer
-      );
+      ) as Executor;
     }
 
     return new ValueOrPromise(() => executor({
       ...processedRequest,
       context,
-      info,
-    })).then(originalResult => transformer.transformResult(originalResult)).resolve();
+      info
+    })).then(
+      executionResult => handleExecutionResult(
+        executionResult,
+        delegationContext,
+        originalResult => transformer.transformResult(originalResult)
+      )
+    ).resolve();
   }
 
   const subscriber =
@@ -171,19 +195,40 @@ export function delegateRequest<TContext = Record<string, any>, TArgs = any>({
     ...processedRequest,
     context,
     info,
-  }).then((subscriptionResult: AsyncIterableIterator<ExecutionResult> | ExecutionResult) => {
-    if (Symbol.asyncIterator in subscriptionResult) {
-      // "subscribe" to the subscription result and map the result through the transforms
-      return mapAsyncIterator<ExecutionResult, any>(
-        subscriptionResult as AsyncIterableIterator<ExecutionResult>,
-        originalResult => ({
-          [targetFieldName]: transformer.transformResult(originalResult),
-        })
-      );
-    }
+  }).then((subscriptionResult: AsyncIterableIterator<ExecutionResult> | ExecutionResult) =>
+    handleSubscriptionResult(subscriptionResult, delegationContext, originalResult =>
+      transformer.transformResult(originalResult)
+    )
+  );
+}
 
-    return transformer.transformResult(subscriptionResult as ExecutionResult);
-  });
+function handleExecutionResult(
+  executionResult: ExecutionResult | AsyncIterableIterator<AsyncExecutionResult>,
+  delegationContext: DelegationContext,
+  resultTransformer: (originalResult: ExecutionResult) => ExecutionResult
+): any {
+  if (isAsyncIterable(executionResult)) {
+    const receiver = new Receiver(executionResult, delegationContext, resultTransformer);
+
+    return receiver.getInitialResult();
+  }
+
+  return externalValueFromResult(resultTransformer(executionResult), delegationContext);
+}
+
+function handleSubscriptionResult(
+  subscriptionResult: AsyncIterableIterator<ExecutionResult> | ExecutionResult,
+  delegationContext: DelegationContext,
+  resultTransformer: (originalResult: ExecutionResult) => any
+): ExecutionResult | AsyncIterableIterator<ExecutionResult> {
+  if (isAsyncIterable(subscriptionResult)) {
+    // "subscribe" to the subscription result and map the result through the transforms
+    return mapAsyncIterator<ExecutionResult, any>(subscriptionResult, originalResult => ({
+      [delegationContext.fieldName]: externalValueFromResult(resultTransformer(originalResult), delegationContext),
+    }));
+  }
+
+  return resultTransformer(subscriptionResult);
 }
 
 const emptyObject = {};
